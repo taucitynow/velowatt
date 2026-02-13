@@ -178,6 +178,9 @@ async function renderDashboard() {
     html += metricCard("Peak CTL", fitness.peak_ctl, "", "var(--green)");
     html += metricCard("FTP", Math.round(ftp), "W", "var(--accent)");
     if (ftpEst?.estimated_ftp) html += metricCard("Est. FTP", Math.round(ftpEst.estimated_ftp), "W", "var(--blue)");
+    const totalRides = await apiGet("/api/rides?limit=9999").catch(() => []);
+    const rideCount = Array.isArray(totalRides) ? totalRides.length : 0;
+    html += metricCard("Total Rides", rideCount, "", "var(--dim)");
     html += '</div>';
   }
 
@@ -229,8 +232,11 @@ function metricCard(label, value, unit, color) {
 }
 
 function renderPMC(fitness) {
-  const all = [...fitness.history, ...(fitness.forecast || [])];
-  const hLen = fitness.history.length;
+  // Limit to last 120 days of history + forecast
+  const historyDays = 120;
+  const trimmedHistory = fitness.history.length > historyDays ? fitness.history.slice(-historyDays) : fitness.history;
+  const all = [...trimmedHistory, ...(fitness.forecast || [])];
+  const hLen = trimmedHistory.length;
   const W = 700, H = 220, P = {t:15,r:15,b:30,l:42};
   const cW = W-P.l-P.r, cH = H-P.t-P.b;
   const vals = all.flatMap(d => [d.ctl, d.atl, d.tsb]);
@@ -268,17 +274,52 @@ function renderPMC(fitness) {
 function renderAddRide() {
   const el = document.getElementById("viewContent");
   el.innerHTML = `<h2 style="font-size:24px;font-weight:800;margin-bottom:16px">Add Ride</h2>
-    <div class="card" style="max-width:420px">
+    
+    <div class="card" style="max-width:500px;margin-bottom:16px">
+      <h3 style="font-size:16px;font-weight:700;margin-bottom:12px">📁 Import .FIT File</h3>
+      <p style="color:var(--dim);font-size:12px;margin-bottom:12px">Upload a .FIT file from Garmin, Wahoo, or Hammerhead</p>
+      <input type="file" id="fitFile" accept=".fit" style="padding:8px;margin-bottom:8px" />
+      <button class="btn btn-accent" style="width:100%" onclick="uploadFit()">Upload & Import</button>
+      <div id="fitResult"></div>
+    </div>
+
+    <div class="card" style="max-width:500px">
+      <h3 style="font-size:16px;font-weight:700;margin-bottom:12px">✏️ Manual Entry</h3>
       <input id="rTitle" placeholder="Ride Title" value="Ride" />
       <input id="rDate" type="date" value="${new Date().toISOString().split("T")[0]}" />
       <div class="flex gap-8"><input id="rH" placeholder="Hours" value="1" type="number" style="flex:1"/><input id="rM" placeholder="Minutes" value="30" type="number" style="flex:1"/></div>
       <input id="rPow" placeholder="Avg Power (W) *" type="number" />
       <input id="rNP" placeholder="NP (optional)" type="number" />
       <input id="rHR" placeholder="Avg HR (optional)" type="number" />
+      <input id="rDist" placeholder="Distance km (optional)" type="number" step="0.1" />
+      <input id="rElev" placeholder="Elevation gain m (optional)" type="number" />
       <p id="rErr" style="color:var(--red);font-size:13px;display:none"></p>
       <button class="btn btn-accent" style="width:100%;margin-top:4px" onclick="submitRide()">Save Ride</button>
       <div id="rResult"></div>
     </div>`;
+}
+async function uploadFit() {
+  const fileInput = document.getElementById("fitFile");
+  const resultEl = document.getElementById("fitResult");
+  if (!fileInput.files.length) { resultEl.innerHTML = '<p style="color:var(--red);font-size:13px;margin-top:8px">Select a .FIT file first</p>'; return; }
+  resultEl.innerHTML = '<p style="color:var(--dim);font-size:13px;margin-top:8px">⏳ Uploading and parsing...</p>';
+  const formData = new FormData();
+  formData.append("file", fileInput.files[0]);
+  try {
+    const res = await fetch(API + "/api/import/fit", { method: "POST", headers: { "Authorization": "Bearer " + authToken }, body: formData });
+    const data = await res.json();
+    if (data?.id) {
+      let html = '<div style="margin-top:12px;padding:14px;background:var(--bg);border-radius:10px;font-size:13px;border:1px solid rgba(22,163,106,0.25)">';
+      html += '✅ <strong>' + data.title + '</strong> imported!<br>';
+      html += 'TSS: ' + data.tss + ' | IF: ' + data.intensity_factor + ' | NP: ' + (data.normalized_power || 'N/A') + 'W<br>';
+      html += 'Duration: ' + formatDuration(data.duration_seconds) + ' | Avg: ' + data.avg_power + 'W';
+      if (data.ai_summary) html += '<div style="margin-top:10px;padding:10px;border-radius:8px;border:1px solid var(--purple)"><span style="color:var(--purple);font-size:11px;font-weight:700">✨ AI Analysis</span><p style="font-size:12px;margin-top:4px;line-height:1.5">' + data.ai_summary + '</p></div>';
+      html += '</div>';
+      resultEl.innerHTML = html;
+    } else {
+      resultEl.innerHTML = '<p style="color:var(--red);font-size:13px;margin-top:8px">Error: ' + (data.detail || 'Import failed') + '</p>';
+    }
+  } catch(e) { resultEl.innerHTML = '<p style="color:var(--red);font-size:13px;margin-top:8px">Upload error: ' + e.message + '</p>'; }
 }
 async function submitRide() {
   const pow = document.getElementById("rPow").value;
@@ -287,10 +328,99 @@ async function submitRide() {
   const body = { title: document.getElementById("rTitle").value, ride_date: document.getElementById("rDate").value, duration_seconds: dur, avg_power: parseFloat(pow) };
   const np = document.getElementById("rNP").value; if (np) body.normalized_power = parseFloat(np);
   const hr = document.getElementById("rHR").value; if (hr) body.avg_heart_rate = parseFloat(hr);
+  const dist = document.getElementById("rDist").value; if (dist) body.distance_km = parseFloat(dist);
+  const elev = document.getElementById("rElev").value; if (elev) body.elevation_gain_m = parseFloat(elev);
   const res = await apiPost("/api/rides", body);
   if (res?.id) {
     document.getElementById("rResult").innerHTML = `<div style="margin-top:14px;padding:14px;background:var(--bg);border-radius:10px;font-size:13px;border:1px solid rgba(22,163,106,0.25)">✅ Ride saved! TSS: ${res.tss} | IF: ${res.intensity_factor} | NP: ${res.normalized_power}W</div>`;
   }
+}
+
+// ── History ──
+let historyPage = 0;
+async function renderHistory() {
+  const el = document.getElementById("viewContent");
+  el.innerHTML = '<div style="color:var(--dim);padding:40px;text-align:center">Loading ride history...</div>';
+  historyPage = 0;
+  await loadHistoryPage(el);
+}
+async function loadHistoryPage(el) {
+  const limit = 50;
+  const rides = await apiGet("/api/rides?limit=" + limit + "&offset=" + (historyPage * limit)).catch(() => []);
+  const total = await apiGet("/api/rides?limit=9999").catch(() => []);
+  const totalCount = Array.isArray(total) ? total.length : 0;
+
+  let html = '<h2 style="font-size:24px;font-weight:800;margin-bottom:16px">Ride History</h2>';
+  html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><span style="color:var(--dim);font-size:13px">' + totalCount + ' rides total</span></div>';
+
+  // Table header
+  html += '<div style="display:flex;padding:8px 16px;gap:14px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px">';
+  html += '<div style="flex:1">Ride</div><div style="min-width:55px;text-align:right">Duration</div><div style="min-width:50px;text-align:right">Power</div><div style="min-width:50px;text-align:right">NP</div><div style="min-width:45px;text-align:right">TSS</div><div style="min-width:40px;text-align:right">IF</div><div style="min-width:75px;text-align:right">Zone</div><div style="min-width:55px;text-align:right">Dist</div><div style="min-width:30px"></div>';
+  html += '</div>';
+
+  if (rides && rides.length) {
+    for (const r of rides) {
+      html += `<div class="ride-row">
+        <div style="flex:1"><div style="font-weight:600;font-size:14px">${r.title}</div><div style="color:var(--muted);font-size:11px;margin-top:2px">${r.ride_date}</div></div>
+        <span style="color:var(--dim);font-size:12px;min-width:55px;text-align:right">${formatDuration(r.duration_seconds)}</span>
+        <span style="color:var(--blue);font-size:12px;font-weight:600;min-width:50px;text-align:right">${r.avg_power}W</span>
+        <span style="color:var(--blue);font-size:12px;min-width:50px;text-align:right">${r.normalized_power ? Math.round(r.normalized_power) + 'W' : '—'}</span>
+        <span style="color:var(--accent);font-size:13px;font-weight:700;min-width:45px;text-align:right">${r.tss}</span>
+        <span style="color:var(--dim);font-size:12px;min-width:40px;text-align:right">${r.intensity_factor || '—'}</span>
+        <span style="color:${intensityColor(r.intensity_factor)};font-size:11px;font-weight:700;min-width:75px;text-align:right">${intensityLabel(r.intensity_factor)}</span>
+        <span style="color:var(--dim);font-size:12px;min-width:55px;text-align:right">${r.distance_km ? r.distance_km + 'km' : '—'}</span>
+        <span style="color:var(--muted);cursor:pointer;font-size:13px;min-width:30px;text-align:right" onclick="deleteRide(${r.id})">🗑</span>
+      </div>`;
+    }
+  } else {
+    html += '<div class="text-center" style="padding:40px;color:var(--dim)"><p>No rides yet</p></div>';
+  }
+
+  // Pagination
+  if (rides && rides.length >= limit) {
+    html += '<div style="text-align:center;margin-top:16px"><button class="btn btn-accent" onclick="nextHistoryPage()">Load More</button></div>';
+  }
+
+  el.innerHTML = html;
+}
+async function nextHistoryPage() {
+  historyPage++;
+  const el = document.getElementById("viewContent");
+  await loadHistoryPage(el);
+}
+async function deleteRide(id) {
+  if (!confirm("Delete this ride?")) return;
+  await apiDel("/api/rides/" + id);
+  renderHistory();
+}
+
+// ── Zones ──
+async function renderZones() {
+  const el = document.getElementById("viewContent");
+  el.innerHTML = '<div style="color:var(--dim);padding:40px;text-align:center">Loading zones...</div>';
+  const data = await apiGet("/api/zones").catch(() => null);
+  if (!data) { el.innerHTML = '<p style="color:var(--red)">Failed to load zones</p>'; return; }
+  const ftp = data.ftp;
+  const zones = [
+    { name: "Z1 Recovery", min: 0, max: Math.round(ftp * 0.55), color: "#6b7280" },
+    { name: "Z2 Endurance", min: Math.round(ftp * 0.55), max: Math.round(ftp * 0.75), color: "#3b82f6" },
+    { name: "Z3 Tempo", min: Math.round(ftp * 0.75), max: Math.round(ftp * 0.90), color: "#16a34a" },
+    { name: "Z4 Threshold", min: Math.round(ftp * 0.90), max: Math.round(ftp * 1.05), color: "#f59e0b" },
+    { name: "Z5 VO2max", min: Math.round(ftp * 1.05), max: Math.round(ftp * 1.20), color: "#f97316" },
+    { name: "Z6 Anaerobic", min: Math.round(ftp * 1.20), max: Math.round(ftp * 1.50), color: "#dc2626" },
+    { name: "Z7 Neuromuscular", min: Math.round(ftp * 1.50), max: 9999, color: "#7c3aed" },
+  ];
+  let html = '<h2 style="font-size:24px;font-weight:800;margin-bottom:16px">Power Zones</h2>';
+  html += '<div class="card" style="max-width:500px"><p style="color:var(--dim);font-size:13px;margin-bottom:16px">Based on FTP: <strong style="color:var(--accent)">' + ftp + 'W</strong></p>';
+  for (const z of zones) {
+    const pct = Math.min(100, (z.max / (ftp * 1.5)) * 100);
+    html += `<div style="margin-bottom:10px">
+      <div style="display:flex;justify-content:space-between;margin-bottom:4px"><span style="font-size:13px;font-weight:600;color:${z.color}">${z.name}</span><span style="font-size:12px;color:var(--dim)">${z.min} - ${z.max > 9000 ? '∞' : z.max}W</span></div>
+      <div style="height:8px;background:var(--bg);border-radius:4px;overflow:hidden"><div style="height:100%;width:${pct}%;background:${z.color};border-radius:4px"></div></div>
+    </div>`;
+  }
+  html += '</div>';
+  el.innerHTML = html;
 }
 
 // ── Strava ──
@@ -410,8 +540,10 @@ function navigate(view) {
   document.getElementById("nav-" + view)?.classList.add("active");
   if (view === "dashboard") renderDashboard();
   else if (view === "add") renderAddRide();
+  else if (view === "history") renderHistory();
   else if (view === "strava") renderStrava();
   else if (view === "coach") renderCoach();
+  else if (view === "zones") renderZones();
   else if (view === "settings") renderSettings();
 }
 
@@ -426,8 +558,10 @@ function renderApp() {
       </div>
       <button class="nav-btn active" id="nav-dashboard" onclick="navigate('dashboard')"><span class="icon">📊</span><span class="label">Dashboard</span></button>
       <button class="nav-btn" id="nav-add" onclick="navigate('add')"><span class="icon">➕</span><span class="label">Add Ride</span></button>
+      <button class="nav-btn" id="nav-history" onclick="navigate('history')"><span class="icon">📋</span><span class="label">History</span></button>
       <button class="nav-btn" id="nav-strava" onclick="navigate('strava')"><span class="icon">🚴</span><span class="label">Strava</span></button>
       <button class="nav-btn" id="nav-coach" onclick="navigate('coach')"><span class="icon">🤖</span><span class="label">AI Coach</span></button>
+      <button class="nav-btn" id="nav-zones" onclick="navigate('zones')"><span class="icon">⚡</span><span class="label">Zones</span></button>
       <button class="nav-btn" id="nav-settings" onclick="navigate('settings')"><span class="icon">⚙️</span><span class="label">Settings</span></button>
       <div style="flex:1"></div>
       <div style="margin-bottom:16px;text-align:center">
