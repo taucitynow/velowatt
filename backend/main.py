@@ -752,7 +752,6 @@ def _get_strava_token(user: User, session: Session) -> Optional[str]:
 def strava_sync(
     user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
-    limit: int = 50,
 ):
     import httpx
 
@@ -773,15 +772,25 @@ def strava_sync(
             except (ValueError, IndexError):
                 pass
 
-    # Fetch activities
+    # Fetch ALL pages of activities
+    activities = []
+    page = 1
+    per_page = 200  # Max allowed by Strava
     with httpx.Client(timeout=30) as client:
-        resp = client.get(
-            "https://www.strava.com/api/v3/athlete/activities",
-            headers={"Authorization": f"Bearer {access_token}"},
-            params={"page": 1, "per_page": limit},
-        )
-        resp.raise_for_status()
-        activities = resp.json()
+        while True:
+            resp = client.get(
+                "https://www.strava.com/api/v3/athlete/activities",
+                headers={"Authorization": f"Bearer {access_token}"},
+                params={"page": page, "per_page": per_page},
+            )
+            resp.raise_for_status()
+            batch = resp.json()
+            if not batch:
+                break
+            activities.extend(batch)
+            if len(batch) < per_page:
+                break
+            page += 1
 
     imported = []
     skipped = []
