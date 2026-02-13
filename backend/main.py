@@ -1031,3 +1031,17 @@ SCOPE: Only cycling and endurance sports coaching. Politely redirect off-topic q
 @app.get("/api/health")
 def health():
     return {"status": "ok", "app": "VeloWatt", "version": "1.0.0"}
+
+
+# ═══════════════════════════════════════
+# FRONTEND — Serve static HTML
+# ═══════════════════════════════════════
+
+from fastapi.responses import FileResponse
+
+@app.get("/")
+def serve_frontend():
+    static_path = Path(__file__).parent / "static" / "index.html"
+    if static_path.exists():
+        return FileResponse(static_path, media_type="text/html")
+    return {"message": "VeloWatt API", "docs": "/docs"}
