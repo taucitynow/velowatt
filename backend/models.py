@@ -92,6 +92,7 @@ class Ride(SQLModel, table=True):
 
     # Metadata
     ai_summary: Optional[str] = Field(default=None)
+    strava_activity_id: Optional[int] = Field(default=None, index=True)
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 

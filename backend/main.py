@@ -854,16 +854,23 @@ def strava_sync(
 
     ftp = user.ftp
 
-    # Get already imported strava IDs
+    # Get already imported strava IDs (check both new field and legacy description)
     user_rides = session.exec(select(Ride).where(Ride.user_id == user.id)).all()
     already_imported = set()
     for r in user_rides:
-        if r.description and "strava_id:" in r.description:
+        if r.strava_activity_id:
+            already_imported.add(r.strava_activity_id)
+        elif r.description and "strava_id:" in r.description:
             try:
                 sid = r.description.split("strava_id:")[1].split("|")[0].strip()
-                already_imported.add(int(sid))
+                sid_int = int(sid)
+                already_imported.add(sid_int)
+                # Backfill the proper field
+                r.strava_activity_id = sid_int
+                session.add(r)
             except (ValueError, IndexError):
                 pass
+    session.commit()
 
     # Fetch ALL pages of activities
     activities = []
@@ -946,6 +953,7 @@ def strava_sync(
                 title=act.get("name", "Ride"),
                 ride_date=ride_date or date.today(),
                 description=f"strava_id:{act_id} | {act.get('device_name', 'Strava')}",
+                strava_activity_id=act_id,
                 duration_seconds=int(act.get("moving_time", 0)),
                 avg_power=act.get("average_watts", 0),
                 normalized_power=metrics["normalized_power"],

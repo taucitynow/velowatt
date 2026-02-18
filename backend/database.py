@@ -33,6 +33,7 @@ def _run_migrations():
         ("user", "coach_week_start", "DATE"),
         ("user", "is_admin", "BOOLEAN DEFAULT FALSE"),
         ("user", "strava_athlete_id", "INTEGER"),
+        ("ride", "strava_activity_id", "INTEGER"),
     ]
     with Session(engine) as session:
         for table, column, col_type in migrations:
