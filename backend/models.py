@@ -19,6 +19,7 @@ class User(SQLModel, table=True):
     name: str = Field(default="Cyclist")
     is_active: bool = Field(default=True)
     is_pro: bool = Field(default=False)
+    is_admin: bool = Field(default=False)
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
     # Settings (inline — no separate table needed)
@@ -31,6 +32,11 @@ class User(SQLModel, table=True):
     strava_refresh_token: Optional[str] = Field(default=None)
     strava_access_token: Optional[str] = Field(default=None)
     strava_expires_at: Optional[int] = Field(default=None)
+    strava_athlete_id: Optional[int] = Field(default=None, index=True)
+
+    # AI Coach usage (free tier limits)
+    coach_messages_used: int = Field(default=0)
+    coach_week_start: Optional[date] = Field(default=None)
 
 
 class UserSettings(SQLModel, table=True):

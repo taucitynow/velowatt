@@ -648,7 +648,7 @@ def strava_status(user: User = Depends(get_current_user)):
 
 @app.get("/api/strava/auth-url")
 def strava_auth_url(user: User = Depends(get_current_user)):
-    """Return Strava OAuth URL for frontend to open."""
+    """Return Strava OAuth URL for frontend to open (logged-in user connecting Strava)."""
     client_id = os.environ.get("STRAVA_CLIENT_ID", "")
     if not client_id:
         raise HTTPException(status_code=400, detail="STRAVA_CLIENT_ID not configured")
@@ -663,7 +663,29 @@ def strava_auth_url(user: User = Depends(get_current_user)):
         f"&redirect_uri={redirect_uri}"
         f"&approval_prompt=auto"
         f"&scope=read,activity:read_all"
-        f"&state={user.id}"
+        f"&state=connect_{user.id}"
+    )
+    return {"url": url}
+
+
+@app.get("/api/strava/login-url")
+def strava_login_url():
+    """Return Strava OAuth URL for login/register (no auth required)."""
+    client_id = os.environ.get("STRAVA_CLIENT_ID", "")
+    if not client_id:
+        raise HTTPException(status_code=400, detail="STRAVA_CLIENT_ID not configured")
+
+    base_url = os.environ.get("BASE_URL", "https://velowatt.app")
+    redirect_uri = f"{base_url}/api/strava/callback"
+
+    url = (
+        f"https://www.strava.com/oauth/authorize"
+        f"?client_id={client_id}"
+        f"&response_type=code"
+        f"&redirect_uri={redirect_uri}"
+        f"&approval_prompt=auto"
+        f"&scope=read,activity:read_all"
+        f"&state=login"
     )
     return {"url": url}
 
@@ -674,7 +696,7 @@ def strava_callback(
     state: str = "",
     session: Session = Depends(get_session),
 ):
-    """Handle Strava OAuth callback."""
+    """Handle Strava OAuth callback — for both login and connect flows."""
     import httpx
 
     client_id = os.environ.get("STRAVA_CLIENT_ID", "")
@@ -690,23 +712,94 @@ def strava_callback(
     resp.raise_for_status()
     tokens = resp.json()
 
-    # Save tokens to user
-    user_id = int(state) if state else None
-    if user_id:
+    athlete = tokens.get("athlete", {})
+    strava_id = athlete.get("id")
+    access_token = tokens["access_token"]
+    refresh_token = tokens["refresh_token"]
+    expires_at = tokens["expires_at"]
+
+    # FLOW 1: Existing user connecting Strava (state = "connect_<user_id>")
+    if state.startswith("connect_"):
+        user_id = int(state.replace("connect_", ""))
         user = session.get(User, user_id)
         if user:
-            user.strava_access_token = tokens["access_token"]
-            user.strava_refresh_token = tokens["refresh_token"]
-            user.strava_expires_at = tokens["expires_at"]
+            user.strava_access_token = access_token
+            user.strava_refresh_token = refresh_token
+            user.strava_expires_at = expires_at
+            if strava_id:
+                user.strava_athlete_id = strava_id
             session.add(user)
             session.commit()
 
-    # Return success HTML
+        from fastapi.responses import HTMLResponse
+        return HTMLResponse(
+            "<html><body style='font-family:Arial;text-align:center;padding:60px;background:#0f1117;color:#e6e6e6'>"
+            "<h1 style='color:#16a34a'>⚡ Strava Connected!</h1>"
+            "<p>Authorization successful. You can close this window.</p>"
+            "<script>setTimeout(()=>{window.close()},2000)</script>"
+            "</body></html>"
+        )
+
+    # FLOW 2: Login/Register via Strava (state = "login")
+    if state == "login" and strava_id:
+        # Check if user exists with this Strava ID
+        user = session.exec(select(User).where(User.strava_athlete_id == strava_id)).first()
+
+        if not user:
+            # Create new user from Strava profile
+            first_name = athlete.get("firstname", "")
+            last_name = athlete.get("lastname", "")
+            name = f"{first_name} {last_name}".strip() or "Cyclist"
+
+            # Generate a random password hash (user won't need it — they login via Strava)
+            import secrets
+            random_pass = secrets.token_hex(16)
+
+            # Use strava athlete ID as pseudo-email if no email available
+            email = f"strava_{strava_id}@velowatt.app"
+
+            user = User(
+                email=email,
+                password_hash=hash_password(random_pass),
+                name=name,
+                strava_athlete_id=strava_id,
+                strava_access_token=access_token,
+                strava_refresh_token=refresh_token,
+                strava_expires_at=expires_at,
+                ftp=200.0,
+                weight_kg=float(athlete.get("weight", 75) or 75),
+            )
+            session.add(user)
+            session.commit()
+            session.refresh(user)
+        else:
+            # Update tokens for existing user
+            user.strava_access_token = access_token
+            user.strava_refresh_token = refresh_token
+            user.strava_expires_at = expires_at
+            session.add(user)
+            session.commit()
+
+        # Generate JWT token
+        jwt_token = create_access_token(user.id, user.email)
+
+        # Return HTML that stores token and redirects to app
+        from fastapi.responses import HTMLResponse
+        return HTMLResponse(f"""<html><body style='font-family:Arial;text-align:center;padding:60px;background:#0f1117;color:#e6e6e6'>
+            <h1 style='color:#f59e0b'>⚡ Welcome to VeloWatt!</h1>
+            <p style='color:#8b8fa3'>Logging you in...</p>
+            <script>
+                localStorage.setItem('vw_token', '{jwt_token}');
+                window.location.href = '/';
+            </script>
+        </body></html>""")
+
+    # Fallback
     from fastapi.responses import HTMLResponse
     return HTMLResponse(
-        "<html><body style='font-family:Arial;text-align:center;padding:60px;background:#1a1a2e;color:#e6e6e6'>"
-        "<h1 style='color:#16a34a'>⚡ VeloWatt Connected!</h1>"
-        "<p>Strava authorization successful. You can close this window.</p>"
+        "<html><body style='font-family:Arial;text-align:center;padding:60px;background:#0f1117;color:#e6e6e6'>"
+        "<h1 style='color:#dc2626'>Something went wrong</h1>"
+        "<p>Please try again.</p>"
         "</body></html>"
     )
 
@@ -922,6 +1015,37 @@ class ChatMessage(BaseModel):
     history: list[dict] = []
 
 
+FREE_COACH_LIMIT = 999  # Unlimited for beta — set to 3 for launch
+
+
+@app.get("/api/coach/status")
+def coach_status(
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """Check AI Coach availability and usage."""
+    if user.is_pro:
+        return {"is_pro": True, "messages_remaining": -1, "limit": -1, "message": "Unlimited AI Coach (Pro)"}
+
+    today = date.today()
+    week_start = today - timedelta(days=today.weekday())
+
+    # Reset counter if new week
+    if user.coach_week_start is None or user.coach_week_start < week_start:
+        user.coach_messages_used = 0
+        user.coach_week_start = week_start
+        session.add(user)
+        session.commit()
+
+    remaining = max(0, FREE_COACH_LIMIT - user.coach_messages_used)
+    return {
+        "is_pro": False,
+        "messages_remaining": remaining,
+        "limit": FREE_COACH_LIMIT,
+        "message": f"{remaining} of {FREE_COACH_LIMIT} free messages this week",
+    }
+
+
 @app.post("/api/coach/chat")
 def coach_chat(
     msg: ChatMessage,
@@ -931,6 +1055,28 @@ def coach_chat(
     api_key = _get_api_key()
     if not api_key:
         return {"response": "AI Coach is not configured. Contact admin.", "needs_api_key": True}
+
+    # Check free tier limit
+    if not user.is_pro:
+        today = date.today()
+        week_start = today - timedelta(days=today.weekday())
+
+        if user.coach_week_start is None or user.coach_week_start < week_start:
+            user.coach_messages_used = 0
+            user.coach_week_start = week_start
+
+        if user.coach_messages_used >= FREE_COACH_LIMIT:
+            remaining_days = 7 - today.weekday()
+            return {
+                "response": f"⚡ You've used all {FREE_COACH_LIMIT} free AI Coach messages this week. Upgrade to Pro for unlimited coaching, or wait {remaining_days} days for your weekly reset.\n\nPro features:\n• Unlimited AI Coach conversations\n• Priority ride analysis\n• Advanced training insights",
+                "limit_reached": True,
+                "needs_api_key": False,
+            }
+
+        # Increment counter
+        user.coach_messages_used += 1
+        session.add(user)
+        session.commit()
 
     ftp = user.ftp
     weight = user.weight_kg
@@ -977,7 +1123,7 @@ def coach_chat(
     sorted_weeks = sorted(weekly_tss.items(), reverse=True)[:4]
     week_lines = [f"  Week of {w[0]}: TSS {round(w[1])}" for w in sorted_weeks]
 
-    context = f"""You are VeloWatt AI Coach for {user.name}.
+    context = f"""You are VeloWatt AI Coach — a professional cycling and strength coach for {user.name}.
 
 ATHLETE PROFILE:
   FTP: {ftp}W | Weight: {weight}kg | W/kg: {round(ftp/weight, 2)}
@@ -999,7 +1145,33 @@ POWER ZONES (FTP={ftp}W):
   Z3 Tempo: {round(ftp*0.75)}-{round(ftp*0.90)}W | Z4 Threshold: {round(ftp*0.90)}-{round(ftp*1.05)}W
   Z5 VO2max: {round(ftp*1.05)}-{round(ftp*1.20)}W | Z6 Anaerobic: >{round(ftp*1.20)}W
 
-SCOPE: Only cycling and endurance sports coaching. Politely redirect off-topic questions."""
+YOUR COACHING EXPERTISE:
+You are a professional cycling and endurance sports coach with deep expertise in:
+
+1. CYCLING TRAINING: Periodization, interval design, base building, race peaking, tapering, recovery optimization, power-based training, heart rate training, zone distribution, training load management.
+
+2. STRENGTH & GYM TRAINING FOR CYCLISTS: Create gym workouts that complement cycling performance. Key areas:
+   - Core stability (planks, dead bugs, pallof press, bird dogs)
+   - Leg strength (squats, lunges, step-ups, Romanian deadlifts, leg press, Bulgarian split squats)
+   - Hip strength (hip thrusts, clamshells, single-leg bridges)
+   - Upper body (rows, push-ups, overhead press — functional for bike handling)
+   - Plyometrics (box jumps, jump squats — for sprint power)
+   - Flexibility & mobility (hip flexor stretches, foam rolling, yoga poses)
+   Programs: Off-season strength (3x/week, heavy), In-season maintenance (2x/week, moderate), CX-specific power (explosive), Pre-race activation.
+
+3. NUTRITION & RECOVERY: Fueling strategies, carb loading, race day nutrition, recovery nutrition, sleep optimization, active recovery.
+
+4. RACE PREPARATION: CX racing, road racing, time trials, sportives, gran fondos. Warmup protocols, race strategy, pacing.
+
+When creating gym workouts, provide:
+- Exercise name, sets × reps, rest time
+- Brief form cues for each exercise
+- RPE or weight guidance relative to ability
+- Total workout time estimate
+
+COMMUNICATION STYLE: Be direct, practical, and specific. Use the athlete's actual data when giving advice. Reference their CTL/ATL/TSB, recent rides, and power zones. When suggesting workouts, give exact power targets, durations, and intervals. Be encouraging but honest.
+
+SCOPE: Cycling, endurance sports, strength training for athletes, nutrition, and recovery. Politely redirect unrelated questions back to training."""
 
     messages = []
     for h in msg.history[-10:]:
@@ -1043,10 +1215,117 @@ def health():
 
 
 # ═══════════════════════════════════════
+# ADMIN API
+# ═══════════════════════════════════════
+
+def require_admin(user: User = Depends(get_current_user)):
+    """Dependency: require admin user."""
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return user
+
+
+ADMIN_SECRET = os.environ.get("ADMIN_SECRET", "velowatt-admin-2026")
+
+
+@app.post("/api/admin/bootstrap")
+def admin_bootstrap(
+    email: str,
+    admin_key: str = "",
+    session: Session = Depends(get_session),
+):
+    """Make a user admin. Use once via /docs to set yourself as admin."""
+    if admin_key != ADMIN_SECRET:
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+    user = session.exec(select(User).where(User.email == email)).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    user.is_admin = True
+    user.is_pro = True
+    session.add(user)
+    session.commit()
+    return {"email": email, "is_admin": True, "is_pro": True}
+
+
+@app.get("/api/admin/stats")
+def admin_stats(
+    admin: User = Depends(require_admin),
+    session: Session = Depends(get_session),
+):
+    """Dashboard stats: users, rides, AI usage."""
+    from sqlalchemy import func
+
+    total_users = session.exec(select(func.count(User.id))).one()
+    pro_users = session.exec(select(func.count(User.id)).where(User.is_pro == True)).one()
+    total_rides = session.exec(select(func.count(Ride.id))).one()
+    rides_with_ai = session.exec(select(func.count(Ride.id)).where(Ride.ai_summary != None)).one()
+
+    # Per-user breakdown
+    users = session.exec(select(User).order_by(User.created_at.desc())).all()
+    user_list = []
+    for u in users:
+        ride_count = session.exec(select(func.count(Ride.id)).where(Ride.user_id == u.id)).one()
+        user_list.append({
+            "id": u.id,
+            "email": u.email,
+            "name": u.name,
+            "is_pro": u.is_pro,
+            "is_admin": u.is_admin,
+            "ftp": u.ftp,
+            "rides": ride_count,
+            "coach_used": u.coach_messages_used or 0,
+            "strava_connected": bool(u.strava_refresh_token),
+            "created_at": u.created_at.isoformat() if u.created_at else "",
+        })
+
+    # Recent rides across all users
+    recent = session.exec(select(Ride).order_by(Ride.created_at.desc()).limit(20)).all()
+    recent_rides = []
+    for r in recent:
+        owner = session.get(User, r.user_id)
+        recent_rides.append({
+            "id": r.id,
+            "title": r.title,
+            "ride_date": r.ride_date.isoformat(),
+            "tss": r.tss,
+            "avg_power": r.avg_power,
+            "user_name": owner.name if owner else "?",
+            "user_email": owner.email if owner else "?",
+            "has_ai": bool(r.ai_summary),
+        })
+
+    return {
+        "total_users": total_users,
+        "pro_users": pro_users,
+        "total_rides": total_rides,
+        "rides_with_ai": rides_with_ai,
+        "users": user_list,
+        "recent_rides": recent_rides,
+    }
+
+
+@app.post("/api/admin/set-pro")
+def admin_set_pro(
+    email: str,
+    is_pro: bool = True,
+    admin: User = Depends(require_admin),
+    session: Session = Depends(get_session),
+):
+    """Toggle Pro status for a user."""
+    user = session.exec(select(User).where(User.email == email)).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    user.is_pro = is_pro
+    session.add(user)
+    session.commit()
+    return {"email": email, "is_pro": is_pro, "name": user.name}
+
+
+# ═══════════════════════════════════════
 # FRONTEND — Serve static HTML
 # ═══════════════════════════════════════
 
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 
 @app.get("/")
 def serve_frontend():
@@ -1054,3 +1333,11 @@ def serve_frontend():
     if static_path.exists():
         return FileResponse(static_path, media_type="text/html")
     return {"message": "VeloWatt API", "docs": "/docs"}
+
+
+@app.get("/admin")
+def serve_admin():
+    admin_path = Path(__file__).parent / "static" / "admin.html"
+    if admin_path.exists():
+        return FileResponse(admin_path, media_type="text/html")
+    return {"message": "Admin page not found"}

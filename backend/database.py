@@ -5,7 +5,7 @@ Set DATABASE_URL env var for PostgreSQL.
 """
 
 import os
-from sqlmodel import SQLModel, Session, create_engine
+from sqlmodel import SQLModel, Session, create_engine, text
 
 # Default to SQLite for local development
 DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///velowatt.db")
@@ -21,8 +21,26 @@ engine = create_engine(DATABASE_URL, echo=False, connect_args=connect_args)
 
 
 def init_db():
-    """Create all tables."""
+    """Create all tables and run migrations."""
     SQLModel.metadata.create_all(engine)
+    _run_migrations()
+
+
+def _run_migrations():
+    """Add new columns to existing tables if they don't exist."""
+    migrations = [
+        ("user", "coach_messages_used", "INTEGER DEFAULT 0"),
+        ("user", "coach_week_start", "DATE"),
+        ("user", "is_admin", "BOOLEAN DEFAULT FALSE"),
+        ("user", "strava_athlete_id", "INTEGER"),
+    ]
+    with Session(engine) as session:
+        for table, column, col_type in migrations:
+            try:
+                session.exec(text(f"ALTER TABLE \"{table}\" ADD COLUMN {column} {col_type}"))
+                session.commit()
+            except Exception:
+                session.rollback()
 
 
 def get_session():
