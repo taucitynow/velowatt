@@ -131,6 +131,11 @@ function renderAuth() {
         <p id="toggleAuth" style="color:var(--dim);font-size:13px;text-align:center;margin-top:16px;cursor:pointer">
           ${mode === "login" ? "Don't have an account? Sign up" : "Already have an account? Log in"}
         </p>
+        <div style="position:relative;text-align:center;margin:20px 0 16px"><div style="position:absolute;top:50%;left:0;right:0;height:1px;background:var(--border)"></div><span style="position:relative;background:var(--card);padding:0 12px;color:var(--muted);font-size:12px">or</span></div>
+        <button class="btn" style="width:100%;padding:12px;background:#FC4C02;color:white;font-size:14px;display:flex;align-items:center;justify-content:center;gap:8px" onclick="stravaLogin()">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="white"><path d="M15.387 17.944l-2.089-4.116h-3.065L15.387 24l5.15-10.172h-3.066m-7.008-5.599l2.836 5.598h4.172L10.463 0l-7 13.828h4.169"/></svg>
+          Continue with Strava
+        </button>
       </div>
     </div>`;
     document.getElementById("toggleAuth").onclick = () => { mode = mode === "login" ? "register" : "login"; draw(); };
@@ -151,6 +156,13 @@ function renderAuth() {
     };
   }
   draw();
+}
+
+async function stravaLogin() {
+  try {
+    const res = await fetch(API + "/api/strava/login-url").then(r => r.json());
+    if (res?.url) window.location.href = res.url;
+  } catch(e) { alert("Error connecting to Strava"); }
 }
 
 // ── Dashboard ──
@@ -463,17 +475,22 @@ async function syncStrava() {
 
 // ── AI Coach ──
 let chatHistory = [];
-function renderCoach() {
+let coachStatus = null;
+async function renderCoach() {
   const el = document.getElementById("viewContent");
+  coachStatus = await apiGet("/api/coach/status").catch(() => null);
+  const limitInfo = coachStatus && !coachStatus.is_pro ? `<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:var(--bg);border-radius:8px;margin-bottom:12px;border:1px solid var(--border)"><span style="color:var(--dim);font-size:12px">${coachStatus.message}</span>${coachStatus.messages_remaining <= 0 ? '<span style="color:var(--accent);font-size:12px;font-weight:600">⚡ Upgrade to Pro</span>' : ''}</div>` : (coachStatus?.is_pro ? '<div style="padding:8px 14px;background:var(--bg);border-radius:8px;margin-bottom:12px;border:1px solid var(--accent)"><span style="color:var(--accent);font-size:12px;font-weight:600">⚡ Pro — Unlimited AI Coach</span></div>' : '');
   el.innerHTML = `<div class="chat-wrap">
-    <h2 style="font-size:24px;font-weight:800;margin-bottom:16px">AI Coach</h2>
+    <h2 style="font-size:24px;font-weight:800;margin-bottom:12px">AI Coach</h2>
+    ${limitInfo}
     <div class="chat-messages" id="chatMsgs">
       ${chatHistory.length === 0 ? `<div class="text-center" style="padding:60px 20px">
         <div style="font-size:48px;margin-bottom:16px">🚴‍♂️</div>
         <p style="font-size:16px;font-weight:600;margin-bottom:8px">Your AI Cycling Coach</p>
-        <p style="color:var(--dim);font-size:14px;margin-bottom:24px">Ask about training, race prep, or recovery</p>
+        <p style="color:var(--dim);font-size:14px;margin-bottom:24px">Ask about training, gym workouts, race prep, or recovery</p>
         <div class="flex gap-8 flex-wrap" style="justify-content:center">
           <button class="btn" style="background:var(--card);color:var(--text);border:1px solid var(--border);font-size:12px;padding:8px 16px;border-radius:20px" onclick="setChat('What should I do today?')">What should I do today?</button>
+          <button class="btn" style="background:var(--card);color:var(--text);border:1px solid var(--border);font-size:12px;padding:8px 16px;border-radius:20px" onclick="setChat('Create a gym workout for cycling')">Gym workout for cycling</button>
           <button class="btn" style="background:var(--card);color:var(--text);border:1px solid var(--border);font-size:12px;padding:8px 16px;border-radius:20px" onclick="setChat('Analyze my training load')">Analyze my training load</button>
           <button class="btn" style="background:var(--card);color:var(--text);border:1px solid var(--border);font-size:12px;padding:8px 16px;border-radius:20px" onclick="setChat('Help me peak for a race')">Help me peak for a race</button>
         </div>
@@ -503,6 +520,8 @@ async function sendChat() {
   chatHistory.push({ role: "assistant", content: res.response });
   renderCoach();
 }
+
+// ── Admin: Set user as Pro (via /docs for now) ──
 
 // ── Settings ──
 async function renderSettings() {
