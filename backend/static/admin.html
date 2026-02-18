@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>⚡ VeloWatt Admin</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0b10; color: #e6e6e6; }
+:root { --bg: #0a0b10; --card: #14151f; --border: #252636; --text: #e6e6e6; --dim: #8b8fa3; --muted: #5a5e72; --accent: #f59e0b; --green: #16a34a; --red: #dc2626; --blue: #3b82f6; --purple: #a78bfa; }
+input { padding: 8px 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 14px; outline: none; font-family: inherit; }
+input:focus { border-color: var(--accent); }
+.btn { padding: 8px 16px; border: none; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; font-family: inherit; }
+.wrap { max-width: 1100px; margin: 0 auto; padding: 24px; }
+.header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 28px; padding-bottom: 16px; border-bottom: 1px solid var(--border); }
+.stats { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 24px; }
+.stat { padding: 16px 20px; background: var(--card); border-radius: 10px; border: 1px solid var(--border); min-width: 130px; flex: 1; }
+.stat-label { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+.stat-value { font-size: 28px; font-weight: 800; }
+.section { margin-bottom: 28px; }
+.section h3 { font-size: 16px; font-weight: 700; margin-bottom: 12px; }
+table { width: 100%; border-collapse: collapse; background: var(--card); border-radius: 10px; overflow: hidden; }
+th { text-align: left; padding: 10px 14px; font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid var(--border); }
+td { padding: 10px 14px; font-size: 13px; border-bottom: 1px solid var(--border); }
+tr:hover td { background: rgba(245,158,11,0.03); }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+.badge-pro { background: rgba(245,158,11,0.15); color: var(--accent); }
+.badge-free { background: rgba(139,143,163,0.15); color: var(--dim); }
+.badge-admin { background: rgba(167,139,250,0.15); color: var(--purple); }
+.badge-yes { background: rgba(22,163,106,0.15); color: var(--green); }
+.badge-no { background: rgba(90,94,114,0.1); color: var(--muted); }
+.login-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+.login-box { width: 360px; padding: 36px; background: var(--card); border-radius: 16px; border: 1px solid var(--border); text-align: center; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+const API = window.location.origin;
+let token = localStorage.getItem("vw_token") || "";
+
+async function apiFetch(path) {
+  const res = await fetch(API + path, { headers: { "Authorization": "Bearer " + token, "Content-Type": "application/json" } });
+  if (res.status === 401) { token = ""; localStorage.removeItem("vw_token"); renderLogin(); return null; }
+  return res.json();
+}
+async function apiPost(path, body) {
+  const res = await fetch(API + path, { method: "POST", headers: { "Authorization": "Bearer " + token, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  return res.json();
+}
+
+function renderLogin() {
+  document.getElementById("app").innerHTML = `<div class="login-wrap">
+    <div class="login-box">
+      <div style="font-size:36px;margin-bottom:8px">⚡</div>
+      <h2 style="color:var(--accent);margin-bottom:4px">VeloWatt Admin</h2>
+      <p style="color:var(--dim);font-size:13px;margin-bottom:24px">Login with your admin account</p>
+      <input id="aEmail" type="email" placeholder="Email" style="width:100%;margin-bottom:8px" /><br>
+      <input id="aPass" type="password" placeholder="Password" style="width:100%;margin-bottom:12px" /><br>
+      <p id="aErr" style="color:var(--red);font-size:13px;margin-bottom:8px;display:none"></p>
+      <button class="btn" style="background:var(--accent);color:var(--bg);width:100%;padding:10px" onclick="doLogin()">Login</button>
+    </div>
+  </div>`;
+}
+
+async function doLogin() {
+  const email = document.getElementById("aEmail").value;
+  const password = document.getElementById("aPass").value;
+  const res = await fetch(API + "/auth/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, password }) }).then(r => r.json());
+  if (res.token) { token = res.token; localStorage.setItem("vw_token", token); loadAdmin(); }
+  else { document.getElementById("aErr").textContent = res.detail || "Login failed"; document.getElementById("aErr").style.display = "block"; }
+}
+
+async function loadAdmin() {
+  const me = await apiFetch("/auth/me");
+  if (!me || !me.id) { renderLogin(); return; }
+  
+  const stats = await apiFetch("/api/admin/stats");
+  if (!stats || stats.detail) {
+    document.getElementById("app").innerHTML = `<div class="wrap"><div style="text-align:center;padding:60px"><h2 style="color:var(--red)">Access Denied</h2><p style="color:var(--dim);margin-top:8px">You need admin privileges. Use /docs → /api/admin/bootstrap to set yourself as admin first.</p><p style="color:var(--muted);margin-top:16px;font-size:12px">Logged in as: ${me.email}</p></div></div>`;
+    return;
+  }
+
+  let html = `<div class="wrap">
+    <div class="header">
+      <div><span style="font-size:24px">⚡</span> <span style="color:var(--accent);font-size:20px;font-weight:800">VeloWatt Admin</span></div>
+      <div style="color:var(--dim);font-size:13px">${me.name} (${me.email})</div>
+    </div>
+
+    <div class="stats">
+      <div class="stat"><div class="stat-label">Total Users</div><div class="stat-value" style="color:var(--blue)">${stats.total_users}</div></div>
+      <div class="stat"><div class="stat-label">Pro Users</div><div class="stat-value" style="color:var(--accent)">${stats.pro_users}</div></div>
+      <div class="stat"><div class="stat-label">Total Rides</div><div class="stat-value" style="color:var(--green)">${stats.total_rides}</div></div>
+      <div class="stat"><div class="stat-label">AI Analyses</div><div class="stat-value" style="color:var(--purple)">${stats.rides_with_ai}</div></div>
+    </div>
+
+    <div class="section">
+      <h3>Users</h3>
+      <table>
+        <thead><tr><th>User</th><th>Email</th><th>Plan</th><th>FTP</th><th>Rides</th><th>Coach Used</th><th>Strava</th><th>Joined</th><th>Action</th></tr></thead>
+        <tbody>`;
+
+  for (const u of stats.users) {
+    const planBadge = u.is_admin ? '<span class="badge badge-admin">Admin</span>' : (u.is_pro ? '<span class="badge badge-pro">Pro</span>' : '<span class="badge badge-free">Free</span>');
+    const stravaBadge = u.strava_connected ? '<span class="badge badge-yes">Yes</span>' : '<span class="badge badge-no">No</span>';
+    const joined = u.created_at ? u.created_at.split("T")[0] : "—";
+    const proBtn = u.is_pro
+      ? `<button class="btn" style="background:var(--muted);color:white;font-size:11px;padding:4px 10px" onclick="togglePro('${u.email}',false)">Remove Pro</button>`
+      : `<button class="btn" style="background:var(--accent);color:var(--bg);font-size:11px;padding:4px 10px" onclick="togglePro('${u.email}',true)">Make Pro</button>`;
+    html += `<tr>
+      <td style="font-weight:600">${u.name}</td>
+      <td style="color:var(--dim)">${u.email}</td>
+      <td>${planBadge}</td>
+      <td>${u.ftp}W</td>
+      <td style="font-weight:600">${u.rides}</td>
+      <td>${u.coach_used}/3</td>
+      <td>${stravaBadge}</td>
+      <td style="color:var(--muted);font-size:12px">${joined}</td>
+      <td>${proBtn}</td>
+    </tr>`;
+  }
+
+  html += `</tbody></table></div>
+
+    <div class="section">
+      <h3>Recent Rides (All Users)</h3>
+      <table>
+        <thead><tr><th>Ride</th><th>User</th><th>Date</th><th>Power</th><th>TSS</th><th>AI</th></tr></thead>
+        <tbody>`;
+
+  for (const r of stats.recent_rides) {
+    html += `<tr>
+      <td style="font-weight:600">${r.title}</td>
+      <td style="color:var(--dim)">${r.user_name}</td>
+      <td style="color:var(--muted);font-size:12px">${r.ride_date}</td>
+      <td style="color:var(--blue)">${r.avg_power}W</td>
+      <td style="color:var(--accent);font-weight:600">${r.tss}</td>
+      <td>${r.has_ai ? '<span class="badge badge-yes">✨</span>' : '<span class="badge badge-no">—</span>'}</td>
+    </tr>`;
+  }
+
+  html += `</tbody></table></div></div>`;
+  document.getElementById("app").innerHTML = html;
+}
+
+async function togglePro(email, isPro) {
+  await fetch(API + "/api/admin/set-pro?email=" + encodeURIComponent(email) + "&is_pro=" + isPro, {
+    method: "POST", headers: { "Authorization": "Bearer " + token }
+  });
+  loadAdmin();
+}
+
+// Boot
+if (token) { loadAdmin(); } else { renderLogin(); }
+</script>
+</body>
+</html>
