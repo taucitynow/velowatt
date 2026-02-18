@@ -1321,6 +1321,27 @@ def admin_set_pro(
     return {"email": email, "is_pro": is_pro, "name": user.name}
 
 
+@app.post("/api/admin/reset-password")
+def admin_reset_password(
+    email: str,
+    new_password: str,
+    admin_key: str = "",
+    session: Session = Depends(get_session),
+):
+    """Reset a user's password. Use via /docs with admin_key. No auth required."""
+    if admin_key != ADMIN_SECRET:
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+    user = session.exec(select(User).where(User.email == email)).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if len(new_password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be 6+ characters")
+    user.password_hash = hash_password(new_password)
+    session.add(user)
+    session.commit()
+    return {"email": email, "message": "Password reset successfully"}
+
+
 # ═══════════════════════════════════════
 # FRONTEND — Serve static HTML
 # ═══════════════════════════════════════
